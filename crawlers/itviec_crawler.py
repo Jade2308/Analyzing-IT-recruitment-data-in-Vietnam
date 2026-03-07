@@ -16,7 +16,7 @@ import os
 # =============================================
 # CẤU HÌNH
 # =============================================
-MAX_PAGES    = 10                        # Số trang muốn cào
+MAX_SAFETY_PAGES = 1000                  # Giới hạn an toàn tối đa (phòng lặp vô hạn)
 SAVE_FOLDER  = "data/raw"
 OUTPUT_FILE  = "data/raw/itviec_jobs.csv"
 COOKIE_FILE  = "data/itviec_cookies.json"
@@ -82,6 +82,48 @@ def login_with_cookie(driver):
     else:
         print("⚠️ Cookie hết hạn! Hãy chạy lại login_cookie.py")
         return False
+
+# =============================================
+# LẤY TỔNG SỐ TRANG
+# =============================================
+def get_total_pages(driver):
+    """Phát hiện tổng số trang phân trang từ trang danh sách đầu tiên"""
+    try:
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Tìm các link phân trang chứa số trang
+        page_links = soup.select("a[href*='page=']")
+        max_page = 1
+        for link in page_links:
+            href = link.get("href", "")
+            link_text = link.get_text(strip=True)
+            href_page  = href.split("page=")[-1].split("&")[0]
+            for part in [link_text, href_page]:
+                try:
+                    num = int(part)
+                    if num > max_page:
+                        max_page = num
+                except ValueError:
+                    pass
+
+        if max_page > 1:
+            print(f"  📑 Phát hiện tổng {max_page} trang")
+            return max_page
+
+        # Fallback: tìm thẻ phân trang dạng khác
+        pagination = soup.select_one("nav.pagination, ul.pagination, [data-total-pages]")
+        if pagination:
+            total_attr = pagination.get("data-total-pages")
+            if total_attr:
+                try:
+                    return int(total_attr)
+                except ValueError:
+                    pass
+
+    except Exception as e:
+        print(f"  ⚠️ Không xác định được tổng số trang: {e}")
+
+    return None
 
 # =============================================
 # LẤY THÔNG TIN TỪ TRANG DANH SÁCH
@@ -250,11 +292,35 @@ def run():
             return
 
         # ── Bước 1: Lấy danh sách JD ──
-        print(f"\n📌 Bước 1: Lấy danh sách từ {MAX_PAGES} trang...")
-        for page in range(1, MAX_PAGES + 1):
-            jobs = get_jobs_from_page(driver, page)
-            all_jobs.extend(jobs)
-            time.sleep(random.uniform(2, 3))
+        # Phát hiện tổng số trang từ trang đầu tiên
+        print("\n📌 Bước 1: Xác định tổng số trang...")
+        first_page_jobs = get_jobs_from_page(driver, 1)
+        total_pages = get_total_pages(driver)
+        all_jobs.extend(first_page_jobs)
+        time.sleep(random.uniform(2, 3))
+
+        if total_pages:
+            print(f"  🗂️  Sẽ cào toàn bộ {total_pages} trang...")
+            for page in range(2, total_pages + 1):
+                jobs = get_jobs_from_page(driver, page)
+                if not jobs:
+                    print(f"  ⚠️  Trang {page} không có JD — dừng sớm")
+                    break
+                all_jobs.extend(jobs)
+                time.sleep(random.uniform(2, 3))
+        else:
+            print("  ⚠️  Không xác định được tổng số trang — cào đến khi hết JD...")
+            page = 2
+            while page <= MAX_SAFETY_PAGES:
+                jobs = get_jobs_from_page(driver, page)
+                if not jobs:
+                    print(f"  ✅ Trang {page} không có JD — đã cào hết")
+                    break
+                all_jobs.extend(jobs)
+                time.sleep(random.uniform(2, 3))
+                page += 1
+            else:
+                print(f"  ⚠️  Đã đạt giới hạn an toàn {MAX_SAFETY_PAGES} trang")
 
         print(f"\n✅ Tổng JD thu thập: {len(all_jobs)}")
 
