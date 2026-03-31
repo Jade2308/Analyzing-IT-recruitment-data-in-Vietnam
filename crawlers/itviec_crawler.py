@@ -21,25 +21,67 @@ SAVE_FOLDER  = "data/raw"
 OUTPUT_FILE  = "data/raw/itviec_jobs.csv"
 COOKIE_FILE  = "data/itviec_cookies.json"
 
+# --- Chrome profile riêng cho Selenium (KHÔNG dùng profile thật) ---
+CHROME_USER_DATA_DIR = r"C:\Users\ASUS\selenium\itviec-profile"
+CHROME_PROFILE_DIR = r"Default"
+
 # =============================================
 # TẠO TRÌNH DUYỆT
 # =============================================
 def create_driver():
     options = Options()
-    # options.add_argument("--headless")  # Bỏ # nếu muốn chạy ẩn
+    # options.add_argument("--headless")  # KHÔNG khuyến nghị với Cloudflare
     options.add_argument("--start-maximized")
+
+    # Tăng độ ổn định khi ChromeDriver khởi tạo (giảm lỗi DevToolsActivePort)
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--remote-debugging-port=0")
+
+    # Dùng profile riêng cho Selenium để giữ cookie/session mà không bị xung đột profile thật
+    options.add_argument(rf"--user-data-dir={CHROME_USER_DATA_DIR}")
+    options.add_argument(rf"--profile-directory={CHROME_PROFILE_DIR}")
+
+    # Giảm tín hiệu automation (không đảm bảo 100% nhưng giúp ổn định hơn)
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+
+    # User-Agent
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     )
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
     return driver
+
+# =============================================
+# PHÁT HIỆN / ĐỢI CLOUDFLARE VERIFY
+# =============================================
+def wait_if_cloudflare(driver, seconds=45):
+    """
+    Nếu gặp trang Cloudflare (Just a moment / security verification),
+    cho người dùng thời gian thao tác/đợi verify trên cửa sổ Chrome.
+    """
+    try:
+        page = (driver.page_source or "").lower()
+    except Exception:
+        page = ""
+
+    signals = [
+        "just a moment",
+        "security verification",
+        "cloudflare",
+        "verifying",
+        "checking your browser",
+    ]
+    if any(s in page for s in signals):
+        print("⚠️ Gặp Cloudflare verify. Hãy thao tác/đợi trên trình duyệt để xác minh...")
+        time.sleep(seconds)
 
 # =============================================
 # ĐĂNG NHẬP BẰNG COOKIE
@@ -56,10 +98,11 @@ def login_with_cookie(driver):
 
     # Phải vào trang trước rồi mới load cookie được
     driver.get("https://itviec.com")
+    wait_if_cloudflare(driver, seconds=30)
     time.sleep(2)
 
     # Load cookie vào trình duyệt
-    with open(COOKIE_FILE, "r") as f:
+    with open(COOKIE_FILE, "r", encoding="utf-8") as f:
         cookies = json.load(f)
 
     for cookie in cookies:
@@ -73,6 +116,7 @@ def login_with_cookie(driver):
 
     # Reload lại trang để cookie có hiệu lực
     driver.get("https://itviec.com/it-jobs")
+    wait_if_cloudflare(driver, seconds=30)
     time.sleep(3)
 
     # Kiểm tra đăng nhập thành công chưa
@@ -136,6 +180,7 @@ def get_jobs_from_page(driver, page):
     try:
         print(f"\n  📄 Đang mở trang {page}...")
         driver.get(url)
+        wait_if_cloudflare(driver, seconds=45)
 
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "div.job-card"))
@@ -219,6 +264,8 @@ def get_job_detail(driver, job):
 
     try:
         driver.get(job["url"])
+        wait_if_cloudflare(driver, seconds=45)
+
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "h1"))
         )
@@ -241,7 +288,7 @@ def get_job_detail(driver, job):
                     break
 
         # --- Lương (kiểm tra lại trong trang chi tiết) ---
-        if not job["salary"] or job["salary"] == "Thỏa thuận":
+        if not job.get("salary") or job["salary"] == "Thỏa thuận":
             for selector in ["[class*='salary']", "div.salary"]:
                 sal = soup.select_one(selector)
                 if sal:
